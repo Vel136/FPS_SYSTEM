@@ -1,0 +1,40 @@
+```lua
+local FPSGun = {}
+FPSGun.__index = FPSGun
+
+function FPSGun.new(config)
+	local self = setmetatable({}, FPSGun)
+
+	self.Name = config.Name or "Gun"
+	self.Headshot = config.Damage and config.Damage.Head or 0
+	self.Bodyshot = config.Damage and config.Damage.Body or 0
+	self.fireRate = config.FireRate or 1
+	self.MaxAmmo = config.Ammo or 10
+	self.Ammo = self.MaxAmmo
+	self.LastFireTime = 0
+	self.BulletPerShot = config.BulletsPerShot or 1
+	self.ReloadingTime = config.ReloadingTime
+	return self
+end
+
+function FPSGun:Fire()
+    local now = os.clock()
+    if self.Ammo <= 0 then
+        return false, "No ammo"
+	end
+	
+    if now - self.LastFireTime < self.fireRate then
+        return false, "Too fast"
+    end
+    
+    self.Ammo -= 1
+	self.LastFireTime = now
+	return true
+end
+
+function FPSGun:Reload()
+	self.Ammo = self.MaxAmmo
+end
+
+return FPSGun
+```
