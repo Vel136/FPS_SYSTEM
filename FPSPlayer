@@ -1,0 +1,25 @@
+local FPSPlayer = {}
+FPSPlayer.__index = FPSPlayer
+local FPSGun = require(script.Parent.FPSGun)
+
+function FPSPlayer.new(player)
+	local self = setmetatable({}, FPSPlayer)
+	self.Player = player
+	self.Guns = {}
+	self.ActiveGunIndex = 1
+	return self
+end
+
+function FPSPlayer:AddGun(name : string,data)
+	self.Guns[name] = data
+end
+
+function FPSPlayer:GetActiveGun()
+	return self.Guns[self.ActiveGunIndex]
+end
+
+function FPSPlayer:SwitchGun(index)
+	self.ActiveGunIndex = index
+end
+
+return FPSPlayer
