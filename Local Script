@@ -1,0 +1,243 @@
+local player = game.Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+local framework = {
+	viewmodel = nil;
+	currentweapon = nil;
+	module = nil;
+}
+
+--Services
+local TweenService = game:GetService("TweenService")
+local UIS = game:GetService("UserInputService")
+local ContextActionService = game:GetService("ContextActionService")
+local RS = game:GetService("ReplicatedStorage")
+local Runservice = game:GetService("RunService")
+--LocalScript
+local mouse = player:GetMouse()
+local CanShoot = true
+local GunFeature = require(RS.Modules.GunFeature)
+local FPSGun = require(RS.Modules.FPS.FPSGun)
+local FPSPlayer = require(RS.Modules.FPS.FPSPlayer)
+--Aiming
+local IsAiming = false
+local AimCF = CFrame.new()
+local LastAimState = false
+--Shooting
+local IsShooting = false
+local ShootingCF = CFrame.new()
+local LastShoot = os.clock()
+local SemiShoot = false
+--Sway
+local currentSwayAMT = .3
+local swayAMT = .3
+local swayCF = CFrame.new()
+local lastCameraCF = CFrame.new()
+local LastRotation = 0
+local RotationCF = CFrame.new()
+--Reloading
+local IsReloading = false 
+--Remote Events
+local ShootingRemote = RS.RemoteEvent.Shooting
+local ReloadingRemote = RS.RemoteEvent.Reloading
+local ChangeRemote = RS.RemoteEvent.ChangeGun
+--DataTracking
+local Weapons = {}
+mouse.Button1Down:Connect(function()
+	if framework.viewmodel ~= nil then
+	IsShooting = true
+	end
+end)
+mouse.Button1Up:Connect(function()
+	if framework.viewmodel ~= nil then
+	IsShooting = false
+	end
+end)
+
+local ShootingCooldown = true
+
+
+local gunBindings = {
+	[Enum.KeyCode.One] = "H&K HK33",
+	[Enum.KeyCode.Two] = "BARRETT M98B",
+	[Enum.KeyCode.Three] = "MOSSBERG M590A1"
+}
+UIS.InputBegan:Connect(function(input)
+	local selectedGun = gunBindings[input.KeyCode]
+	if selectedGun then
+		ChangeRemote:FireServer(selectedGun)
+		LoadGun(selectedGun)
+		return
+	end
+	
+	if not framework.viewmodel then return end
+	 
+	if input.KeyCode == Enum.KeyCode.Q then
+		IsAiming = true
+		GunFeature.Aiming(framework.module.FieldOfView)
+	elseif input.KeyCode == Enum.KeyCode.R and not IsReloading then
+		Weapons[framework.currentweapon]:Reload()
+		framework.module.Reloading()
+		IsReloading = true
+		task.delay(framework.module.ReloadingTime,function()
+			IsReloading = false
+		end)
+		ReloadingRemote:FireServer(framework.currentweapon)
+	end
+end)
+
+UIS.InputEnded:Connect(function(input)
+	if input.KeyCode == Enum.KeyCode.Q then
+		IsAiming = false
+		GunFeature.Aiming(70)
+	end
+end)
+
+function Zoom(action,state,input)
+	if action == "Zoom" and state == Enum.UserInputState.Begin and camera.FieldOfView ~= framework.module.ZoomFieldOfView then
+		GunFeature.Zoom(framework.module.ZoomFieldOfView,framework.module.FieldOfView,true)
+	elseif action == "Zoom" and state == Enum.UserInputState.Begin and camera.FieldOfView == framework.module.ZoomFieldOfView then
+		GunFeature.Zoom(framework.module.ZoomFieldOfView,framework.module.FieldOfView,false)
+	end
+end
+
+function LoadGun(Item)
+	for i,Child in pairs(camera:GetChildren()) do
+		if Child:IsA("Model") then
+			Child:Destroy()
+		end
+	end
+	local Module = RS.Modules:FindFirstChild(Item) and require(RS.Modules:FindFirstChild(Item))
+	local Viewmodel = RS.Viewmodels:FindFirstChild(Item) and RS.Viewmodels:FindFirstChild(Item):Clone()
+	if Module and Viewmodel then
+		local config = {
+			Name = Item,
+			Damage = { Body = Module.Bodyshot, Head = Module.Headshot },
+			FireRate = Module.FireRate,
+			Ammo = Module.Magazine,
+			BulletsPerShot = Module.BulletPerShot,
+			ReloadingTime = Module.ReloadingTime
+		}
+		local Gun = FPSGun.new(config)
+		Weapons[Item] = Gun
+		framework.viewmodel = Viewmodel
+		framework.viewmodel.Parent = camera
+		framework.module = Module
+		framework.currentweapon = framework.viewmodel.Name
+	end
+end
+
+local swayCam = CFrame.new()
+local swayRot = CFrame.new()
+function Rotate()
+	local mouseDelta = UIS:GetMouseDelta()
+	local divCam = 50
+	local divRot = 150
+
+	local swayCamX = math.clamp(mouseDelta.X/divCam, -0.3,0.3)
+	local swayCamY = math.clamp(mouseDelta.Y/divCam, -0.3,0.3)
+
+	swayCam = swayCam:Lerp(CFrame.new(-swayCamX, swayCamY, 0), .1)
+
+	-- CAMERA SWAY ROTATION
+
+	local swayRotX = math.clamp(mouseDelta.X/divRot, -0.03,0.03)
+	local swayRotY = math.clamp(mouseDelta.Y/divRot, -0.03,0.03)
+	swayRot = swayRot:Lerp(CFrame.Angles(-swayRotY,-swayRotX, 0), .1)
+end
+
+function Aiming()
+	if IsAiming  then
+		local aimpart = framework.viewmodel.Aimpart.CFrame
+		local offset = aimpart:ToObjectSpace(framework.viewmodel.PrimaryPart.CFrame)
+		AimCF = AimCF:Lerp(offset,.1)
+	elseif IsAiming ~= LastAimState then
+		LastAimState = IsAiming
+		if IsAiming and framework.module.CanZoom then
+			ContextActionService:BindAction("Zoom", Zoom, false, Enum.KeyCode.E)
+		else
+			ContextActionService:UnbindAction("Zoom")
+		end
+	else
+		AimCF = AimCF:Lerp(CFrame.new(),.1)
+	end
+
+	
+end
+
+function Sway()
+	local rot = camera.CFrame:ToObjectSpace(lastCameraCF)
+	local X,Y,Z = rot:ToOrientation()
+	swayCF = swayCF:Lerp(CFrame.Angles(math.sin(X) * currentSwayAMT, math.sin(Y) * currentSwayAMT, 0), .08)
+	lastCameraCF = camera.CFrame
+end
+
+Runservice.RenderStepped:Connect(function()
+	if not framework.viewmodel then return end
+	
+	local Swayvalue = swayRot * swayCam
+	if IsAiming then
+		Sway()
+		Swayvalue = swayCF
+	end
+	if framework.viewmodel and framework.viewmodel.Parent == camera then
+		framework.viewmodel:SetPrimaryPartCFrame(camera.CFrame * AimCF * ShootingCF * Swayvalue)
+	end
+	Aiming()
+	Rotate()
+end)
+
+camera.ChildAdded:Connect(function(model)
+	if model:IsA("Model") then
+		for i,v in pairs(model:GetDescendants()) do
+			if v:IsA("Part") then
+				v.CanCollide = false
+			end
+		end
+	end
+end)
+
+--Shooting Auto
+local ShootingDebounce = true
+
+function canShoot()
+	return not IsReloading and ShootingDebounce
+end
+
+function doShoot()
+	if not Weapons[framework.currentweapon]:Fire() then return end
+	
+	local shootingPartOffset = framework.viewmodel.PrimaryPart.CFrame:ToObjectSpace(framework.viewmodel.ShootingPart.CFrame)
+	local muzzleCFrame = camera.CFrame * AimCF * ShootingCF * swayCF * shootingPartOffset
+	local muzzleWorldPos = muzzleCFrame.Position
+	local PassedValue = {
+		MousePos = mouse.Hit.Position,
+		MuzzlePos = muzzleWorldPos,
+	}
+	local SpreadAngle = (IsAiming and framework.module.AimingSpreadAngle) or framework.module.SpreadAngle
+
+	ShootingRemote:FireServer(muzzleWorldPos, framework.viewmodel.Name, PassedValue, SpreadAngle)
+	GunFeature[framework.module.Firing](framework.module.Recoil,framework.module.RecoilKick)
+	framework.module.Shooting()
+
+	ShootingDebounce = false
+	LastShoot = os.clock()
+	task.delay(framework.module.FireRate, function()
+		ShootingDebounce = true
+	end)
+end
+
+while task.wait() do
+	if not IsShooting then
+		SemiShoot = false
+		continue
+	end
+
+	local firingMode = framework.module.Firing
+	if firingMode == "Auto" and canShoot() then
+		doShoot()
+	elseif firingMode == "Semi" and canShoot() and not SemiShoot then
+		SemiShoot = true
+		doShoot()
+	end
+end
