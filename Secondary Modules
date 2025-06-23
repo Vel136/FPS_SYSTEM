@@ -1,0 +1,53 @@
+local module = {}
+
+--Gun Default Aiming
+function module.Aiming(FieldOfViewGun : number)
+	local TweenService = game:GetService("TweenService")
+	local Camera = workspace.CurrentCamera
+	local TweenInfo = TweenInfo.new(.5,Enum.EasingStyle.Sine,Enum.EasingDirection.In)
+	local TweenCam = TweenService:Create(Camera,TweenInfo,{FieldOfView = FieldOfViewGun})
+	TweenCam:Play()
+end
+
+--Gun Semi Shoot
+function module.Semi(Recoil : number,RecoilKick : number)
+	for i = 0,(Recoil/RecoilKick) do
+		local camera = workspace.CurrentCamera
+		task.wait()
+		local CFrame = camera.CFrame * CFrame.Angles(math.rad(RecoilKick),math.rad(math.random(-RecoilKick/2,RecoilKick/2)),0)
+		camera.CFrame = camera.CFrame:Lerp(CFrame,1)
+	end
+end
+--Gun AutoShoot
+function module.Auto(RecoilKick : number)
+	local camera = workspace.CurrentCamera
+	local CFrame = camera.CFrame * CFrame.Angles(math.rad(RecoilKick),math.rad(math.random(-RecoilKick/2,RecoilKick/2)),0)
+	camera.CFrame = camera.CFrame:Lerp(CFrame,1)
+end
+--Zoom Gun
+local ZoomDebounce = false
+function module.Zoom(ZoomFieldOfView : number,FieldOfView : number,ZoomIn : boolean)
+	local TweenService = game:GetService("TweenService")
+	local Camera = workspace.Camera
+	
+	if ZoomDebounce then return end
+	
+	if ZoomIn  then
+		ZoomDebounce = not ZoomDebounce
+		local TweenInfo = TweenInfo.new(1,Enum.EasingStyle.Sine,Enum.EasingDirection.In)
+		local TweenCam = TweenService:Create(Camera,TweenInfo,{FieldOfView = ZoomFieldOfView})
+		TweenCam:Play()
+		TweenCam.Completed:Wait()
+		ZoomDebounce = not ZoomDebounce
+	else 
+		ZoomDebounce = not ZoomDebounce
+		local TweenInfo = TweenInfo.new(.5,Enum.EasingStyle.Sine,Enum.EasingDirection.Out)
+		local TweenCam = TweenService:Create(Camera,TweenInfo,{FieldOfView = FieldOfView})
+		TweenCam:Play()
+		TweenCam.Completed:Wait()
+		ZoomDebounce = not ZoomDebounce
+	end
+end
+
+
+return module
