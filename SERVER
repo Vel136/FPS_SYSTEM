@@ -54,7 +54,7 @@ local ANTICHEAT = {
 }
 
 -- Server-side shooting handler
-Shooting.OnServerEvent:Connect(function(player, pos, weaponName, passedValue, spreadAngle)
+Shooting.OnServerEvent:Connect(function(player, pos, weaponName, passedValue, state)
 	-- Validate player state
 	
 	if StateTracker.Shooting[player].Cooldown or StateTracker.Reloading[player].Cooldown then 
@@ -95,8 +95,8 @@ Shooting.OnServerEvent:Connect(function(player, pos, weaponName, passedValue, sp
 	
 	
 
-
-	local maxSpread = Guns[weaponName].SpreadAngle
+	local spreadAngle = gun.CurrentSpreadAngle
+	local maxSpread = Guns[weaponName].MaxSpreadAngle
 	local minSpread = Guns[weaponName].AimingSpreadAngle
 	if spreadAngle > maxSpread or spreadAngle < minSpread then
 		warn(`{player.Name} modified spread angle: {spreadAngle}`)
@@ -105,8 +105,10 @@ Shooting.OnServerEvent:Connect(function(player, pos, weaponName, passedValue, sp
 	end
 
 	-- Deduct ammo (server-authoritative)
-	gun.Ammo -= 1
 	playerData.LastFireTime = now
+	gun.State = state
+	gun:Fire()
+	gun.Ammo -= 1
 	-- Process each bullet server-side
 	for i = 1, gun.BulletPerShot do
 		local direction = (passedValue.MousePos - passedValue.MuzzlePos).Unit
@@ -162,9 +164,19 @@ game.Players.PlayerAdded:Connect(function(player)
 			FireRate = gunModule.FireRate,
 			Ammo = gunModule.Magazine,
 			BulletsPerShot = gunModule.BulletPerShot,
-			ReloadingTime = gunModule.ReloadingTime
+			ReloadingTime = gunModule.ReloadingTime,
+			AimingValues = gunModule.AimingValues,
+			Recoil = gunModule.Recoil,
+			SpreadAngles = {
+				AimingSpreadAngle = gunModule.AimingSpreadAngle,
+				SpreadAngle = gunModule.SpreadAngle,
+				FiringSpreadAngle = gunModule.FiringSpreadAngle,
+				MaxSpreadAngle = gunModule.MaxSpreadAngle,
+				AngleReset = gunModule.AngleReset;
+			}
 		}
 		local gun = FPSGun.new(config)
+		gun.State = false
 		data:AddGun(gunName,gun)
 	end
 	data.LastFireTime = 0
