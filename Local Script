@@ -116,10 +116,21 @@ function LoadGun(Item)
 			FireRate = Module.FireRate,
 			Ammo = Module.Magazine,
 			BulletsPerShot = Module.BulletPerShot,
-			ReloadingTime = Module.ReloadingTime
+			ReloadingTime = Module.ReloadingTime,
+			AimingValues = Module.AimingValues,
+			Recoil = Module.Recoil,
+			SpreadAngles = {
+				AimingSpreadAngle = Module.AimingSpreadAngle,
+				SpreadAngle = Module.SpreadAngle,
+				FiringSpreadAngle = Module.FiringSpreadAngle,
+				MaxSpreadAngle = Module.MaxSpreadAngle,
+				AngleReset = Module.AngleReset;
+			}
 		}
+		if not Weapons[Item] then
 		local Gun = FPSGun.new(config)
 		Weapons[Item] = Gun
+		end
 		framework.viewmodel = Viewmodel
 		framework.viewmodel.Parent = camera
 		framework.module = Module
@@ -138,20 +149,36 @@ function Rotate()
 	local swayCamY = math.clamp(mouseDelta.Y/divCam, -0.3,0.3)
 
 	swayCam = swayCam:Lerp(CFrame.new(-swayCamX, swayCamY, 0), .1)
-
 	-- CAMERA SWAY ROTATION
-
 	local swayRotX = math.clamp(mouseDelta.X/divRot, -0.03,0.03)
 	local swayRotY = math.clamp(mouseDelta.Y/divRot, -0.03,0.03)
 	swayRot = swayRot:Lerp(CFrame.Angles(-swayRotY,-swayRotX, 0), .1)
 end
 
 function Aiming()
-	if IsAiming  then
-		local aimpart = framework.viewmodel.Aimpart.CFrame
-		local offset = aimpart:ToObjectSpace(framework.viewmodel.PrimaryPart.CFrame)
-		AimCF = AimCF:Lerp(offset,.1)
+	if IsAiming then
+		local humanoid = player.Character:WaitForChild("Humanoid")
+		local GUN = Weapons[framework.currentweapon]
+		local SWAY_SPEED = 	GUN.AimingValues.SWAY_SPEED     -- How fast the scope drifts (lower = smoother)
+		local SWAY_AMPLITUDE = GUN.AimingValues.SWAY_AMPLITUDE-- How far the scope moves (adjust for intensity)
+		local BREATH_RATE = GUN.AimingValues.BREATH_RATE       -- Speed of "breathing" effect
+
+		-- Base aim offset (replace your existing code)
+		local aimPart = framework.viewmodel.Aimpart.CFrame
+		local offset = aimPart:ToObjectSpace(framework.viewmodel.PrimaryPart.CFrame)
+
+		-- Simulate natural sway (sine/cosine for smooth looping)
+		local time = os.clock()
+		local swayX = math.sin(time * SWAY_SPEED) * SWAY_AMPLITUDE
+		local swayY = math.cos(time * BREATH_RATE * 0.5) * (SWAY_AMPLITUDE * 0.3)
+		
+		-- Apply sway to the aim offset
+		offset = offset * CFrame.new(swayX, swayY, 0)
+
+		-- Lerp to the swayed position (smoother transition)
+		AimCF = AimCF:Lerp(offset, 0.1)
 	elseif IsAiming ~= LastAimState then
+		-- Your existing zoom logic
 		LastAimState = IsAiming
 		if IsAiming and framework.module.CanZoom then
 			ContextActionService:BindAction("Zoom", Zoom, false, Enum.KeyCode.E)
@@ -159,10 +186,9 @@ function Aiming()
 			ContextActionService:UnbindAction("Zoom")
 		end
 	else
-		AimCF = AimCF:Lerp(CFrame.new(),.1)
+		-- Return to neutral when not aiming
+		AimCF = AimCF:Lerp(CFrame.new(), 0.1)
 	end
-
-	
 end
 
 function Sway()
@@ -205,8 +231,9 @@ function canShoot()
 end
 
 function doShoot()
-	if not Weapons[framework.currentweapon]:Fire() then return end
-	
+	if Weapons[framework.currentweapon].Ammo <= 0 then return end
+	Weapons[framework.currentweapon].Ammo -= 1
+	framework.module.Shooting()
 	local shootingPartOffset = framework.viewmodel.PrimaryPart.CFrame:ToObjectSpace(framework.viewmodel.ShootingPart.CFrame)
 	local muzzleCFrame = camera.CFrame * AimCF * ShootingCF * swayCF * shootingPartOffset
 	local muzzleWorldPos = muzzleCFrame.Position
@@ -214,11 +241,11 @@ function doShoot()
 		MousePos = mouse.Hit.Position,
 		MuzzlePos = muzzleWorldPos,
 	}
-	local SpreadAngle = (IsAiming and framework.module.AimingSpreadAngle) or framework.module.SpreadAngle
+	
 
-	ShootingRemote:FireServer(muzzleWorldPos, framework.viewmodel.Name, PassedValue, SpreadAngle)
+	ShootingRemote:FireServer(muzzleWorldPos, framework.viewmodel.Name, PassedValue, IsAiming)
 	GunFeature[framework.module.Firing](framework.module.Recoil,framework.module.RecoilKick)
-	framework.module.Shooting()
+	
 
 	ShootingDebounce = false
 	LastShoot = os.clock()
