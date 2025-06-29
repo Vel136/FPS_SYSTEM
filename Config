@@ -1,1 +1,49 @@
+local Config = {
+	-- Weapon Configuration
+	WEAPONS = {},
 
+	-- Security Configuration
+	SECURITY = {
+		-- Network Tolerance
+		NETWORK_LATENCY_TOLERANCE = 0.05,
+		MAX_PACKET_LOSS_TOLERANCE = 0.1,
+
+		-- Rate Limiting
+		MIN_FIRE_INTERVAL = 0.03,
+		MIN_RELOAD_INTERVAL = 1.0,
+		MIN_WEAPON_SWITCH_INTERVAL = 0.1,
+		MIN_STATE_CHANGE_INTERVAL = 0.05,
+
+		-- Validation Thresholds
+		MAX_SHOT_DISTANCE = 7,
+		MAX_AMMO_DISCREPANCY = 2,
+		MAX_SPREAD_DEVIATION = 0.5,
+
+		-- Behavioral Analysis
+		MAX_ACCURACY_THRESHOLD = 0.85,
+		MAX_HEADSHOT_RATIO = 0.70,
+		MIN_REACTION_TIME = 0.08,
+		MIN_MOVEMENT_VARIANCE = 0.02,
+
+		-- Punishment System
+		VIOLATION_DECAY_TIME = 300, -- 5 minutes
+		WARNING_THRESHOLD = 5,
+		TEMP_RESTRICT_THRESHOLD = 15,
+		TEMP_BAN_THRESHOLD = 30,
+		PERM_BAN_THRESHOLD = 50,
+
+		-- Memory Management
+		MAX_LOG_ENTRIES = 1000,
+		MAX_HISTORY_LENGTH = 50,
+		CLEANUP_INTERVAL = 300
+	},
+
+	-- Performance Configuration
+	PERFORMANCE = {
+		TICK_RATE = 60,
+		MAX_CONCURRENT_VALIDATIONS = 100,
+		BATCH_SIZE = 10,
+		CACHE_EXPIRY = 30
+	}
+}
+return Config
