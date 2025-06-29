@@ -24,7 +24,7 @@ local mouse = player:GetMouse()
 -- Modules
 local GunFeature = require(ReplicatedStorage.Modules.GunFeature)
 local FPSGun = require(ReplicatedStorage.Modules.FPS.FPSGun)
-local FPSPlayer = require(ReplicatedStorage.Modules.FPS.FPSPlayer)
+
 
 -- Remote Events
 local RemoteEvents = ReplicatedStorage.RemoteEvent
@@ -265,6 +265,7 @@ local function CanShoot(): boolean
 	return not States.IsReloading 
 		and States.ShootingDebounce 
 		and Framework.viewmodel ~= nil
+		and player.Character.Humanoid.Health ~= 0
 end
 
 --[[
@@ -413,6 +414,23 @@ local function HandleWeaponSwitch(keyCode: Enum.KeyCode)
 	return false
 end
 
+
+
+--[[
+	Handles aiming input
+--]]
+local function HandleAiming(isAiming: boolean)
+	if not Framework.viewmodel then return end
+	States.IsAiming = isAiming
+	
+	if isAiming then
+		StateHandlerRemote:FireServer("aiming",{weaponName = Framework.currentWeapon})
+		GunFeature.Aiming(Framework.module.FieldOfView)
+	else
+		StateHandlerRemote:FireServer("stop aiming",{weaponName = Framework.currentWeapon})
+		GunFeature.Aiming(CONFIG.DEFAULT_FOV)
+	end
+end
 --[[
 	Handles reloading input
 --]]
@@ -423,7 +441,7 @@ local function HandleReload()
 	if not currentWeapon or currentWeapon.Ammo == currentWeapon.MaxAmmo then 
 		return 
 	end
-
+	HandleAiming(false)
 	-- Fire reload start state
 	StateHandlerRemote:FireServer("reload", {
 		weaponName = Framework.currentWeapon,
@@ -437,22 +455,6 @@ local function HandleReload()
 		States.IsReloading = false
 	end)
 end
-
---[[
-	Handles aiming input
---]]
-local function HandleAiming(isAiming: boolean)
-	States.IsAiming = isAiming
-
-	if isAiming then
-		StateHandlerRemote:FireServer("aiming",{weaponName = Framework.currentWeapon})
-		GunFeature.Aiming(Framework.module.FieldOfView)
-	else
-		StateHandlerRemote:FireServer("stop aiming",{weaponName = Framework.currentWeapon})
-		GunFeature.Aiming(CONFIG.DEFAULT_FOV)
-	end
-end
-
 -- ==========================================
 -- EVENT CONNECTIONS
 -- ==========================================
@@ -464,7 +466,16 @@ mouse.Button1Down:Connect(function()
 		StateHandlerRemote:FireServer("shootStart", Framework.currentWeapon)
 	end
 end)
-
+mouse.Button2Down:Connect(function()
+	if not States.IsAiming	then
+		HandleAiming(true)
+	end
+end)
+mouse.Button2Up:Connect(function()
+	if States.IsAiming then
+		HandleAiming(false)
+	end
+end)
 mouse.Button1Up:Connect(function()
 	if Framework.viewmodel then
 		States.IsShooting = false
@@ -481,7 +492,7 @@ UserInputService.InputBegan:Connect(function(input: InputObject)
 	if not Framework.viewmodel then return end
 
 	-- Handle specific inputs
-	if input.KeyCode == Enum.KeyCode.Q then
+	if input.KeyCode == Enum.KeyCode.Q and not States.IsAiming	then
 		HandleAiming(true)
 	elseif input.KeyCode == Enum.KeyCode.R then
 		HandleReload()
