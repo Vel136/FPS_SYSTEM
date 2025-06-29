@@ -26,8 +26,6 @@ local Guns = {
 }
 
 
-local FPSGun = require(ReplicatedStorage.Modules.FPS.FPSGun)
-local FPSPlayer = require(ReplicatedStorage.Modules.FPS.FPSPlayer)
 local UnifiedFPSSystem = require(ReplicatedStorage.Modules.FPS.UnifiedFPSSystem)
 local Systems = UnifiedFPSSystem.initialize()
 local Config = UnifiedFPSSystem.Config
