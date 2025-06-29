@@ -1,1 +1,125 @@
 
+-- ==========================================
+-- CORE SERVICES & DEPENDENCIES
+-- ==========================================
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+
+-- ==========================================
+-- UNIFIED MODULES SYSTEM
+-- ==========================================
+local PlayerManager = require(script.PlayerManager)
+local ValidationPipeline = require(script.ValidationPipeLine)
+local PunishmentSystem = require(script.PunishmentSystem)
+local ShootingSystem = require(script.ShootingSystem)
+local Config = require(script.Config)
+-- ==========================================
+-- SYSTEM INITIALIZATION
+-- ==========================================
+function initializeSystem()
+	-- Create core systems
+	local playerManager = PlayerManager.new()
+	local validationPipeline = ValidationPipeline.new(playerManager)
+	local punishmentSystem = PunishmentSystem.new(playerManager)
+	local shootingSystem = ShootingSystem.new(playerManager, validationPipeline)
+	local systems = {
+		playerManager = playerManager,
+		validationPipeline = validationPipeline,
+		punishmentSystem = punishmentSystem,
+		shootingSystem = shootingSystem
+	}
+	-- ==========================================
+	-- CORE SYSTEM EVENT LISTENERS
+	-- ==========================================
+
+	-- Player Lifecycle Events
+	playerManager.eventBus.on("playerAdded", function(player, playerData)
+	end)
+
+	playerManager.eventBus.on("playerRemoving", function(player, playerData)
+		
+	end)
+	
+	playerManager.eventBus.on("stop aiming",function(...)
+		shootingSystem:handleAiming(...)
+	end)
+	playerManager.eventBus.on("aiming",function(...)
+		shootingSystem:handleAiming(...)
+	end)
+	playerManager.eventBus.on("reload",function(...)
+		shootingSystem:handleReloadRequest(...)
+	end)
+	-- ==========================================
+	-- SET UP ROBLOX PLAYER EVENTS
+	-- ==========================================
+	Players.PlayerAdded:Connect(function(player)
+		systems.playerManager:addPlayer(player)
+	end)
+
+	Players.PlayerRemoving:Connect(function(player)
+		systems.playerManager:removePlayer(player)
+	end)
+
+	-- ==========================================
+	-- RETURN SYSTEM COMPONENTS
+	-- ==========================================
+	return systems
+end
+
+-- ==========================================
+-- HELPER FUNCTIONS FOR EVENT EMISSION
+-- ==========================================
+
+-- Function to manually trigger weapon switch event\
+local function Reload(player,weaponName)
+	
+end
+local function switchWeapon(playerManager, player, newWeaponName)
+	local playerData = playerManager:getPlayer(player)
+	if not playerData then return false end
+
+	local oldWeapon = playerData.combat.activeWeapon
+
+	-- Emit the event
+	playerManager.eventBus.emit("weaponSwitched", player, oldWeapon, newWeaponName)
+
+	return true
+end
+
+-- Function to manually trigger hit event
+local function processHit(playerManager, shooter, target, damage, bodyPart)
+	local hitData = {
+		damage = damage,
+		bodyPart = bodyPart,
+		timestamp = os.clock(),
+		weapon = playerManager:getPlayer(shooter).combat.activeWeapon
+	}
+
+	playerManager.eventBus.emit("playerHit", shooter, target, hitData)
+end
+
+-- Function to manually trigger reload event
+local function completeReload(playerManager, player, weaponName)
+	local playerData = playerManager:getPlayer(player)
+	if not playerData then return false end
+
+	local weaponConfig = Config.WEAPONS[weaponName]
+	if not weaponConfig then return false end
+
+	local newAmmo = weaponConfig.maxAmmo
+
+	playerManager.eventBus.emit("weaponReloaded", player, weaponName, newAmmo)
+
+	return true
+end
+
+-- Export initialization and helper functions
+return {
+	initialize = initializeSystem,
+	switchWeapon = switchWeapon,
+	processHit = processHit,
+	completeReload = completeReload,
+	Config = Config,
+}
