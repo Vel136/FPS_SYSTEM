@@ -1,1 +1,421 @@
+-- ==========================================
+-- VALIDATION PIPELINE SYSTEM
+-- ==========================================
+local ValidationPipeline = {}
+ValidationPipeline.__index = ValidationPipeline
+local Config = require(script.Parent.Config)
+function ValidationPipeline.new(playerManager)
+	local self = setmetatable({}, ValidationPipeline)
+	self.playerManager = playerManager
+	self.validators = {}
+	self.cache = {}
 
+	self:_registerDefaultValidators()
+	return self
+end
+
+function ValidationPipeline:addValidator(name, validator)
+	self.validators[name] = validator
+end
+
+function ValidationPipeline:validate(player, action, data)
+	local startTime = os.clock()
+	local playerData = self.playerManager:getPlayer(player)
+
+	if not playerData or not playerData.state.isValid then
+		return self:_createResult(false, "INVALID_PLAYER_STATE", nil)
+	end
+
+	local context = {
+		player = player,
+		playerData = playerData,
+		action = action,
+		data = data,
+		timestamp = startTime,
+		networkLatency = playerData.performance.networkLatency
+	}
+
+	-- Run validation chain
+	for validatorName, validator in pairs(self.validators) do
+		local success, result = pcall(validator, context)
+		if not success then
+			warn(`[ValidationPipeline] Error in validator {validatorName}: {result}`)
+			return self:_createResult(false, "VALIDATOR_ERROR", validatorName)
+		end
+
+		if not result.success then
+			self:_handleViolation(player, validatorName, result)
+			return result
+		end
+	end
+
+	-- Update performance metrics
+	local validationTime = os.clock() - startTime
+	self:_updatePerformanceMetrics(validationTime)
+
+	return self:_createResult(true, "VALIDATION_PASSED", validationTime)
+end
+
+function ValidationPipeline:_createResult(success, reason, data)
+	return {
+		success = success,
+		reason = reason,
+		data = data,
+		timestamp = os.clock()
+	}
+end
+
+function ValidationPipeline:_handleViolation(player, violationType, result)
+	local playerData = self.playerManager:getPlayer(player)
+	if not playerData then return end
+
+	-- Log violation
+	table.insert(playerData.security.violations, {
+		type = violationType,
+		reason = result.reason,
+		data = result.data,
+		timestamp = os.clock()
+	})
+
+	-- Update security metrics
+	playerData.security.totalViolations = playerData.security.totalViolations + 1
+	playerData.security.lastViolation = os.clock()
+
+	-- Calculate suspicion score
+	self:_updateSuspicionScore(player, violationType)
+
+	-- Emit violation event
+	self.playerManager.eventBus.emit("violation", player, violationType, result)
+end
+
+function ValidationPipeline:_updateSuspicionScore(player, violationType)
+	local playerData = self.playerManager:getPlayer(player)
+	if not playerData then return end
+
+	local scores = {
+		RAPID_FIRE = 10,
+		INVALID_BULLET_ORIGIN = 15,
+		AMMO_MANIPULATION = 20,
+		SPREAD_MODIFICATION = 25,
+		REQUEST_SPAM = 8,
+		IMPOSSIBLE_ACCURACY = 30,
+		MOVEMENT_BOT = 25
+	}
+
+	local scoreIncrease = scores[violationType] or 5
+	playerData.security.suspicionScore = playerData.security.suspicionScore + scoreIncrease
+
+	-- Apply time decay
+	local timeSinceLastViolation = os.clock() - playerData.security.lastViolation
+	if timeSinceLastViolation > Config.SECURITY.VIOLATION_DECAY_TIME then
+		playerData.security.suspicionScore = math.max(0, 
+			playerData.security.suspicionScore * 0.8)
+	end
+end
+
+function ValidationPipeline:_registerDefaultValidators()
+
+	-- Rate Limiting Validator
+	self:addValidator("rateLimiting", function(context)
+		local player = context.player
+		local action = context.action
+		local playerData = context.playerData
+		local now = context.timestamp
+
+		local limits = {
+			shoot = Config.SECURITY.MIN_FIRE_INTERVAL,
+			reload = Config.SECURITY.MIN_RELOAD_INTERVAL,
+			switchWeapon = Config.SECURITY.MIN_WEAPON_SWITCH_INTERVAL,
+			stateChange = Config.SECURITY.MIN_STATE_CHANGE_INTERVAL
+		}
+
+		local limit = limits[action]
+		if not limit then
+			return {success = true}
+		end
+
+		local lastAction = playerData.behavior.requestTimings[action] or 0
+		local timeDelta = now - lastAction
+
+		if timeDelta < (limit - context.networkLatency) then
+			return {
+				success = false,
+				reason = "RATE_LIMIT_EXCEEDED",
+				data = {
+					action = action,
+					timeDelta = timeDelta,
+					requiredInterval = limit
+				}
+			}
+		end
+
+		playerData.behavior.requestTimings[action] = now
+		return {success = true}
+	end)
+
+	-- Fire Rate Validator
+	self:addValidator("fireRate", function(context)
+		if context.action ~= "shoot" then
+			return {success = true}
+		end
+
+		local playerData = context.playerData
+		local weaponName = context.data.weaponName
+		local weaponConfig = Config.WEAPONS[weaponName]
+
+		if not weaponConfig then
+			return {
+				success = false,
+				reason = "UNKNOWN_WEAPON",
+				data = {weaponName = weaponName}
+			}
+		end
+
+		local timeDelta = context.timestamp - playerData.combat.lastFireTime
+		local requiredInterval = weaponConfig.FireRate
+
+		if timeDelta < (requiredInterval - context.networkLatency) then
+			return {
+				success = false,
+				reason = "RAPID_FIRE",
+				data = {
+					weaponName = weaponName,
+					timeDelta = timeDelta,
+					requiredInterval = requiredInterval
+				}
+			}
+		end
+
+		return {success = true}
+	end)
+
+	-- Bullet Origin Validator
+	self:addValidator("bulletOrigin", function(context)
+		if context.action ~= "shoot" then
+			return {success = true}
+		end
+
+		local player = context.player
+		local muzzlePos = context.data.muzzlePos
+
+		if not player.Character then
+			return {
+				success = false,
+				reason = "NO_CHARACTER",
+				data = {}
+			}
+		end
+
+		local validParts = {"Head", "Torso", "Right Arm", "Left Arm"}
+		local minDistance = math.huge
+
+		for _, partName in ipairs(validParts) do
+			local part = player.Character:FindFirstChild(partName)
+			if part then
+				local distance = (part.Position - muzzlePos).Magnitude
+				minDistance = math.min(minDistance, distance)
+			end
+		end
+
+		if minDistance > Config.SECURITY.MAX_SHOT_DISTANCE then
+			return {
+				success = false,
+				reason = "INVALID_BULLET_ORIGIN",
+				data = {
+					muzzlePos = muzzlePos,
+					minDistance = minDistance,
+					maxAllowed = Config.SECURITY.MAX_SHOT_DISTANCE
+				}
+			}
+		end
+
+		return {success = true}
+	end)
+
+	-- Ammo Consistency Validator
+	self:addValidator("ammoConsistency", function(context)
+		if context.action ~= "shoot" and context.action ~= "reload" then
+			return {success = true}
+		end
+
+		local playerData = context.playerData
+		local weaponName = context.data.weaponName
+		local clientAmmo = context.data.ammo
+
+		local serverWeapon = playerData.combat.weapons[weaponName]
+
+		if not serverWeapon then
+			return {
+				success = false,
+				reason = "WEAPON_NOT_FOUND",
+				data = {server = serverWeapon,unvalidweapon = weaponName}
+			}
+		end
+
+		if not clientAmmo then 
+			return {
+				success = false,
+				reason = "AMMO NOT FOUND"
+			}
+		end
+
+		local ammoDiscrepancy = math.abs(serverWeapon.ammo - clientAmmo)
+
+		if ammoDiscrepancy > Config.SECURITY.MAX_AMMO_DISCREPANCY then
+			return {
+				success = false,
+				reason = "AMMO_MANIPULATION",
+				data = {
+					weaponName = weaponName,
+					serverAmmo = serverWeapon.ammo,
+					clientAmmo = clientAmmo,
+					discrepancy = ammoDiscrepancy
+				}
+			}
+		end
+
+		return {success = true}
+	end)
+
+	-- Behavioral Analysis Validator
+	self:addValidator("behaviorAnalysis", function(context)
+		local playerData = context.playerData
+		local behavior = playerData.behavior
+		local stats = playerData.stats
+
+		-- Check accuracy
+		if #behavior.accuracyHistory > 10 then
+			if stats.accuracy > Config.SECURITY.MAX_ACCURACY_THRESHOLD then
+				return {
+					success = false,
+					reason = "IMPOSSIBLE_ACCURACY",
+					data = {
+						accuracy = stats.accuracy,
+						threshold = Config.SECURITY.MAX_ACCURACY_THRESHOLD
+					}
+				}
+			end
+
+		end
+
+		-- Check headshot ratio
+		if stats.totalShots > 20 and stats.totalHits > 0 then
+			local headshotRatio = stats.headshots / stats.totalHits
+			if headshotRatio > Config.SECURITY.MAX_HEADSHOT_RATIO then
+				return {
+					success = false,
+					reason = "IMPOSSIBLE_HEADSHOT_RATIO",
+					data = {
+						ratio = headshotRatio,
+						threshold = Config.SECURITY.MAX_HEADSHOT_RATIO
+					}
+				}
+			end
+		end
+
+		return {success = true}
+	end)
+	self:addValidator("changeWeapon", function(context)
+		if context.action ~= "changeWeapon" then
+			return {success = true}
+		end
+
+		local playerData = context.playerData
+		local newWeaponName = context.data.weaponName
+		local currentWeapon = playerData.combat.activeWeapon
+
+		-- Check if weapon exists in config
+		local weaponConfig = Config.WEAPONS[newWeaponName]
+		if not weaponConfig then
+			return {
+				success = false,
+				reason = "INVALID_WEAPON",
+				data = {weaponName = newWeaponName}
+			}
+		end
+
+		-- Check if player owns this weapon
+		local playerWeapon = playerData.combat.weapons[newWeaponName]
+		if not playerWeapon then
+			return {
+				success = false,
+				reason = "WEAPON_NOT_OWNED",
+				data = {weaponName = newWeaponName}
+			}
+		end
+
+		-- Check if trying to switch to same weapon
+		if currentWeapon == newWeaponName then
+			return {
+				success = false,
+				reason = "REDUNDANT_WEAPON_SWITCH",
+				data = {weaponName = newWeaponName}
+			}
+		end
+		self.playerManager:updatePlayerData(context.player,"combat","activeWeapon",newWeaponName)
+
+		return {success = true}
+	end)
+	self:addValidator("aiming",function(context)
+		local playerData = context.playerData
+		local weaponName = context.data.weaponName
+
+		if playerData.combat.isReloading and playerData.combat.isAiming	then
+			return {success = false, reason = "Cannot aim while reloading"}
+		end
+
+		-- Weapon checks
+		if not weaponName or not playerData.combat.weapons[weaponName] then
+			return {success = false, reason = "Invalid weapon"}
+		end
+
+		if playerData.combat.activeWeapon ~= weaponName then
+			return {success = false, reason = "Weapon not equipped"}
+		end
+
+		local weaponConfig = Config.WEAPONS[weaponName]
+		if not weaponConfig or not weaponConfig.CanAim then
+			return {success = false, reason = "Weapon cannot aim"}
+		end
+
+		-- Rate limiting
+		local lastAimToggle = playerData.combat.lastAimToggle or 0
+		if os.clock() - lastAimToggle < 0.1 then -- 100ms cooldown
+			return {success = false, reason = "Aim toggle too rapid"}
+		end
+
+		return {success = true}
+	end)
+	self:addValidator("alivecheck",function(context)
+		local player = context.player
+		local character = player.Character
+		if not character then 
+			return {
+				success = false,
+				reason = "CHARACTER_NOT FOUND"
+			}
+		end
+		local humanoid = character:FindFirstChild("Humanoid")
+		if not humanoid then 
+			return {
+				success = false,
+				reason = "HUMANOID_NOT_FOUND"
+			}
+		end
+		if humanoid.Health <= 0 then
+			return {
+				success = false,
+				reason = "HUMANOID_INVALID_HEALTH",
+			}
+		end
+
+		return {success = true}
+	end)
+end
+
+function ValidationPipeline:_updatePerformanceMetrics(validationTime)
+	-- Track performance metrics for optimization
+	self.playerManager.performanceMetrics.validationsPerSecond = 
+		self.playerManager.performanceMetrics.validationsPerSecond + 1
+end
+return ValidationPipeline
