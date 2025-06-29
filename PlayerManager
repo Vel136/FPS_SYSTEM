@@ -1,1 +1,538 @@
+-- ==========================================
+-- UNIFIED PLAYER MANAGER
+-- ==========================================
+local PlayerManager = {}
+PlayerManager.__index = PlayerManager
+local Config = require(script.Parent.Config)
+local RunService = game:GetService("RunService")
+function PlayerManager.new()
+	local self = setmetatable({}, PlayerManager)
+	self.players = {}
+	self.eventBus = {}
+	self.validationQueue = {}
+	self.performanceMetrics = {
+		validationsPerSecond = 0,
+		memoryUsage = 0,
+		lastCleanup = 0
+	}
 
+	self:_initializeEventBus()
+	self:_startMainLoop()
+
+	return self
+end
+
+function PlayerManager:_initializeEventBus()
+	self.eventBus = {
+		listeners = {},
+
+		on = function(event, callback)
+			if not self.eventBus.listeners[event] then
+				self.eventBus.listeners[event] = {}
+			end
+			table.insert(self.eventBus.listeners[event], callback)
+		end,
+
+		emit = function(event, ...)
+			local listeners = self.eventBus.listeners[event]
+			if listeners then
+				for _, callback in ipairs(listeners) do
+					local success, err = pcall(callback, ...)
+					if not success then
+						warn(`[EventBus] Error in {event} listener: {err}`)
+					end
+				end
+			end
+		end
+	}
+end
+-- ==========================================
+-- MAIN LOOP IMPLEMENTATION FOR PLAYERMANAGER
+-- ==========================================
+
+function PlayerManager:_startMainLoop()
+	-- Performance tracking variables
+	local lastCleanup = 0
+	local lastPerformanceReset = 0
+	local validationCounter = 0
+
+	-- Main loop connection
+	self.mainLoopConnection = RunService.Heartbeat:Connect(function()
+		local currentTime = os.clock()
+
+		-- ==========================================
+		-- PERFORMANCE METRICS TRACKING
+		-- ==========================================
+		validationCounter = validationCounter + 1
+
+		-- Reset validation counter every second
+		if currentTime - lastPerformanceReset >= 1.0 then
+			self.performanceMetrics.validationsPerSecond = validationCounter
+			validationCounter = 0
+			lastPerformanceReset = currentTime
+
+			-- Update memory usage estimate
+			self.performanceMetrics.memoryUsage = self:_calculateMemoryUsage()
+		end
+
+		-- ==========================================
+		-- PERIODIC CLEANUP (every 5 minutes)
+		-- ==========================================
+		if currentTime - lastCleanup >= Config.SECURITY.CLEANUP_INTERVAL then
+			self:_performCleanup(currentTime)
+			lastCleanup = currentTime
+			self.performanceMetrics.lastCleanup = currentTime
+		end
+
+		-- ==========================================
+		-- PLAYER DATA MAINTENANCE
+		-- ==========================================
+		self:_updatePlayerStates(currentTime)
+
+		-- ==========================================
+		-- VALIDATION QUEUE PROCESSING
+		-- ==========================================
+		self:_processValidationQueue()
+
+		-- ==========================================
+		-- SECURITY MONITORING
+		-- ==========================================
+		self:_monitorSecurityThreats(currentTime)
+	end)
+end
+
+-- ==========================================
+-- CLEANUP OPERATIONS
+-- ==========================================
+function PlayerManager:_performCleanup(currentTime)
+	local cleanupCount = 0
+
+	for player, playerData in pairs(self.players) do
+		if not player.Parent then
+			-- Player disconnected but not properly removed
+			self:removePlayer(player)
+			cleanupCount = cleanupCount + 1
+			continue
+		end
+
+		-- Clean violation logs (keep only recent ones)
+		local violations = playerData.security.violations
+		local cutoffTime = currentTime - Config.SECURITY.VIOLATION_DECAY_TIME
+
+		for i = #violations, 1, -1 do
+			if violations[i].timestamp < cutoffTime then
+				table.remove(violations, i)
+				cleanupCount = cleanupCount + 1
+			end
+		end
+
+		-- Limit violation log size
+		if #violations > Config.SECURITY.MAX_LOG_ENTRIES then
+			local excessCount = #violations - Config.SECURITY.MAX_LOG_ENTRIES
+			for i = 1, excessCount do
+				table.remove(violations, 1)
+			end
+			cleanupCount = cleanupCount + excessCount
+		end
+
+		-- Clean behavior history arrays
+		local behavior = playerData.behavior
+
+		-- Limit accuracy history
+		if #behavior.accuracyHistory > Config.SECURITY.MAX_HISTORY_LENGTH then
+			local excess = #behavior.accuracyHistory - Config.SECURITY.MAX_HISTORY_LENGTH
+			for i = 1, excess do
+				table.remove(behavior.accuracyHistory, 1)
+			end
+		end
+
+		-- Limit reaction time history
+		if #behavior.reactionTimes > Config.SECURITY.MAX_HISTORY_LENGTH then
+			local excess = #behavior.reactionTimes - Config.SECURITY.MAX_HISTORY_LENGTH
+			for i = 1, excess do
+				table.remove(behavior.reactionTimes, 1)
+			end
+		end
+
+		-- Limit movement data
+		if #behavior.movementData > Config.SECURITY.MAX_HISTORY_LENGTH then
+			local excess = #behavior.movementData - Config.SECURITY.MAX_HISTORY_LENGTH
+			for i = 1, excess do
+				table.remove(behavior.movementData, 1)
+			end
+		end
+
+		-- Limit shot patterns
+		if #behavior.shotPatterns > Config.SECURITY.MAX_HISTORY_LENGTH then
+			local excess = #behavior.shotPatterns - Config.SECURITY.MAX_HISTORY_LENGTH
+			for i = 1, excess do
+				table.remove(behavior.shotPatterns, 1)
+			end
+		end
+
+		-- Decay suspicion score over time
+		local timeSinceLastViolation = currentTime - playerData.security.lastViolation
+		if timeSinceLastViolation > Config.SECURITY.VIOLATION_DECAY_TIME then
+			playerData.security.suspicionScore = math.max(0, 
+				playerData.security.suspicionScore * 0.95) -- 5% decay per cleanup cycle
+		end
+	end
+
+	-- Clean validation queue cache
+	for key, cacheEntry in pairs(self.validationQueue) do
+		if currentTime - cacheEntry.timestamp > Config.PERFORMANCE.CACHE_EXPIRY then
+			self.validationQueue[key] = nil
+			cleanupCount = cleanupCount + 1
+		end
+	end
+
+	-- Emit cleanup event for monitoring
+	self.eventBus.emit("cleanup", {
+		timestamp = currentTime,
+		itemsCleaned = cleanupCount,
+		playerCount = self:getPlayerCount()
+	})
+
+	print(`[PlayerManager] Cleanup completed: {cleanupCount} items cleaned`)
+end
+
+-- ==========================================
+-- PLAYER STATE UPDATES
+-- ==========================================
+function PlayerManager:_updatePlayerStates(currentTime)
+	for player, playerData in pairs(self.players) do
+		-- Update activity status
+		playerData.lastActivity = currentTime
+
+		-- Check and remove temporary restrictions
+		if playerData.security.isRestricted and 
+			currentTime >= playerData.security.restrictionEnd then
+			playerData.security.isRestricted = false
+			self.eventBus.emit("restrictionLifted", player)
+		end
+
+		-- Update network performance metrics
+		self:_updateNetworkMetrics(player, playerData)
+
+		-- Update behavioral analysis
+		self:_updateBehavioralAnalysis(player, playerData, currentTime)
+	end
+end
+
+-- ==========================================
+-- VALIDATION QUEUE PROCESSING
+-- ==========================================
+function PlayerManager:_processValidationQueue()
+	local processed = 0
+	local maxProcess = Config.PERFORMANCE.BATCH_SIZE
+
+	for queueKey, queueItem in pairs(self.validationQueue) do
+		if processed >= maxProcess then break end
+
+		-- Process queued validation
+		local success, result = pcall(queueItem.validator, queueItem.context)
+
+		if success then
+			queueItem.callback(result)
+		else
+			queueItem.callback({
+				success = false,
+				reason = "QUEUE_PROCESSING_ERROR",
+				error = result
+			})
+		end
+
+		-- Remove from queue
+		self.validationQueue[queueKey] = nil
+		processed = processed + 1
+	end
+end
+
+-- ==========================================
+-- SECURITY MONITORING
+-- ==========================================
+function PlayerManager:_monitorSecurityThreats(currentTime)
+	for player, playerData in pairs(self.players) do
+		-- Check for suspicious patterns
+		local violations = playerData.security.violations
+		local recentViolations = 0
+		local cutoff = currentTime - 60 -- Last minute
+
+		for _, violation in ipairs(violations) do
+			if violation.timestamp >= cutoff then
+				recentViolations = recentViolations + 1
+			end
+		end
+
+		-- Alert for burst violations
+		if recentViolations >= 5 then
+			self.eventBus.emit("securityAlert", player, {
+				type = "BURST_VIOLATIONS",
+				count = recentViolations,
+				timeframe = 60
+			})
+		end
+
+		-- Check for inactive players (potential AFK or bot)
+		local timeSinceActivity = currentTime - playerData.lastActivity
+		if timeSinceActivity > 300 and playerData.stats.totalShots > 0 then -- 5 minutes
+			self.eventBus.emit("securityAlert", player, {
+				type = "SUSPICIOUS_INACTIVITY",
+				duration = timeSinceActivity
+			})
+		end
+	end
+end
+
+-- ==========================================
+-- NETWORK METRICS UPDATE
+-- ==========================================
+function PlayerManager:_updateNetworkMetrics(player, playerData)
+	-- Estimate network latency (this would need actual ping implementation)
+	-- For now, we'll use a placeholder
+	local estimatedLatency = 0.05 -- 50ms default
+
+	-- You would implement actual ping measurement here
+	-- This could involve RemoteFunctions or custom ping system
+
+	playerData.performance.networkLatency = estimatedLatency
+	playerData.performance.lastPing = os.clock()
+end
+
+-- ==========================================
+-- BEHAVIORAL ANALYSIS UPDATE
+-- ==========================================
+function PlayerManager:_updateBehavioralAnalysis(player, playerData, currentTime)
+	if not playerData then return end
+	local character = player.Character
+	if not character or not character:FindFirstChild("HumanoidRootPart") then
+		return
+	end
+
+	local humanoidRootPart = character.HumanoidRootPart
+
+	-- Track movement patterns
+	local currentPos = humanoidRootPart.Position
+	local lastMovement = playerData.behavior.movementData[#playerData.behavior.movementData]
+
+	if lastMovement then
+		local distance = (currentPos - lastMovement.position).Magnitude
+		local timeDelta = currentTime - lastMovement.timestamp
+
+		if timeDelta > 0 then
+			local velocity = distance / timeDelta
+
+			-- Add movement data
+			table.insert(playerData.behavior.movementData, {
+				position = currentPos,
+				velocity = velocity,
+				timestamp = currentTime
+			})
+
+			-- Calculate movement variance for bot detection
+			self:_calculateMovementVariance(playerData)
+		end
+	else
+		-- First movement entry
+		table.insert(playerData.behavior.movementData, {
+			position = currentPos,
+			velocity = 0,
+			timestamp = currentTime
+		})
+	end
+end
+
+-- ==========================================
+-- MOVEMENT VARIANCE CALCULATION
+-- ==========================================
+function PlayerManager:_calculateMovementVariance(playerData)
+	if not playerData then return end
+	local movementData = playerData.behavior.movementData
+	if #movementData < 10 then return end -- Need enough data
+
+	local velocities = {}
+	for i = math.max(1, #movementData - 20), #movementData do
+		table.insert(velocities, movementData[i].velocity)
+	end
+
+	-- Calculate mean
+	local mean = 0
+	for _, velocity in ipairs(velocities) do
+		mean = mean + velocity
+	end
+	mean = mean / #velocities
+
+	-- Calculate variance
+	local variance = 0
+	for _, velocity in ipairs(velocities) do
+		variance = variance + (velocity - mean) ^ 2
+	end
+	variance = variance / #velocities
+
+	playerData.stats.movementVariance = variance
+
+	-- Check for bot-like movement (too consistent)
+	
+	if variance < Config.SECURITY.MIN_MOVEMENT_VARIANCE and mean > 0.1 then
+		-- Potential bot detected
+		self.eventBus.emit("securityAlert", playerData.player, {
+			type = "BOT_MOVEMENT_DETECTED",
+			variance = variance,
+			threshold = Config.SECURITY.MIN_MOVEMENT_VARIANCE
+		})
+	end
+end
+
+-- ==========================================
+-- UTILITY FUNCTIONS
+-- ==========================================
+function PlayerManager:_calculateMemoryUsage()
+	-- Estimate memory usage based on data structures
+	local totalMemory = 0
+
+	for player, playerData in pairs(self.players) do
+		if not playerData then continue end
+		-- Rough estimation of memory per player
+		totalMemory = totalMemory + 1024 -- Base player data
+		totalMemory = totalMemory + (#playerData.security.violations * 256)
+		totalMemory = totalMemory + (#playerData.behavior.accuracyHistory * 32)
+		totalMemory = totalMemory + (#playerData.behavior.reactionTimes * 32)
+		totalMemory = totalMemory + (#playerData.behavior.movementData * 128)
+	end
+
+	return totalMemory
+end
+
+function PlayerManager:getPlayerCount()
+	local count = 0
+	for _ in pairs(self.players) do
+		count = count + 1
+	end
+	return count
+end
+
+-- ==========================================
+-- CLEANUP ON SHUTDOWN
+-- ==========================================
+function PlayerManager:destroy()
+	if self.mainLoopConnection then
+		self.mainLoopConnection:Disconnect()
+		self.mainLoopConnection = nil
+	end
+
+	-- Clear all data
+	self.players = {}
+	self.validationQueue = {}
+	self.eventBus.listeners = {}
+end
+function PlayerManager:addPlayer(player)
+	if self.players[player] then
+		warn(`Player {player.Name} already exists in PlayerManager`)
+		return false
+	end
+
+	self.players[player] = {
+		-- Core Data
+		userId = player.UserId,
+		joinTime = os.clock(),
+		lastActivity = os.clock(),
+
+		-- Combat State
+		combat = {
+			activeWeapon = nil,
+			weapons = {},
+			lastFireTime = 0,
+			lastReloadTime = {},
+			lastWeaponSwitch = 0,
+			isShooting = false,
+			isReloading = false,
+			isAiming = false
+		},
+
+		-- Anti-Cheat Data
+		security = {
+			violations = {},
+			suspicionScore = 0,
+			totalViolations = 0,
+			lastViolation = 0,
+			isRestricted = false,
+			restrictionEnd = 0,
+			warningsIssued = 0
+		},
+
+		-- Statistical Data
+		stats = {
+			totalShots = 0,
+			totalHits = 0,
+			headshots = 0,
+			accuracy = 0,
+			averageReactionTime = 0,
+			movementVariance = 0
+		},
+
+		-- Behavioral Analysis
+		behavior = {
+			accuracyHistory = {},
+			reactionTimes = {},
+			movementData = {},
+			shotPatterns = {},
+			requestTimings = {}
+		},
+
+		-- Performance Tracking
+		performance = {
+			networkLatency = 0,
+			packetLoss = 0,
+			lastPing = 0
+		},
+
+		-- State Management
+		state = {
+			isValid = true,
+			errors = {},
+			lastValidation = 0
+		}
+	}
+
+	-- Initialize weapons
+	for weaponName, weaponConfig in pairs(Config.WEAPONS) do
+		self.players[player].combat.weapons[weaponName] = {
+			ammo = weaponConfig.Ammo,
+			CurrentSpreadAngle = weaponConfig.SpreadAngles.SpreadAngle,
+			lastReload = 0,
+			isReloading = false,
+		}
+	end
+	self.eventBus.emit("playerAdded", player, self.players[player])
+	return true
+end
+
+function PlayerManager:removePlayer(player)
+	if not self.players[player] then return false end
+
+	self.eventBus.emit("playerRemoving", player, self.players[player])
+	self.players[player] = nil
+	return true
+end
+
+function PlayerManager:getPlayer(player)
+	return self.players[player]
+end
+
+function PlayerManager:updatePlayerData(player, category, field, value)
+	local playerData = self.players[player]
+
+	if not playerData then return false end
+
+	if playerData[category] then
+		local oldValue = playerData[category][field]
+		playerData[category][field] = value
+		playerData.lastActivity = os.clock()
+
+		self.eventBus.emit("dataUpdated", player, category, field, oldValue, value)
+		return true
+	end
+
+	return false
+end
+return PlayerManager
