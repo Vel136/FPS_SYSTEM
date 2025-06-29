@@ -1,202 +1,99 @@
---Remote Events
+-- Refactored FPS Shooting System - Server Script
+-- Combines all player state into a single object per player
+
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Shooting = ReplicatedStorage.RemoteEvent.Shooting
-local Reloading = ReplicatedStorage.RemoteEvent.Reloading
-local ChangeGun = ReplicatedStorage.RemoteEvent.ChangeGun
---Fast Cast
+local Players = game:GetService("Players")
+
+local RemoteEvents = ReplicatedStorage.RemoteEvent
+local Shooting = RemoteEvents.Shooting
+local Reloading = RemoteEvents.Reloading
+local ChangeGun = RemoteEvents.ChangeGun
+local StateHandler = RemoteEvents.StateHandler
+
 local FastCast = require(ReplicatedStorage.Modules.FastCastRedux)
 local caster = FastCast.new()
 local FastCastBehavior = FastCast.newBehavior()
+
+local hk33 = require(ReplicatedStorage.Modules["H&K HK33"])
+local m590a1 = require(ReplicatedStorage.Modules["MOSSBERG M590A1"])
+local m98b = require(ReplicatedStorage.Modules["BARRETT M98B"])
+
+-- Use variables as keys for easy reference
 local Guns = {
-	["H&K HK33"] = require(ReplicatedStorage.Modules["H&K HK33"]),
-	["MOSSBERG M590A1"] = require(ReplicatedStorage.Modules["MOSSBERG M590A1"]),
-	["BARRETT M98B"] = require(ReplicatedStorage.Modules["BARRETT M98B"])
+	["H&K HK33"] = hk33,
+	["MOSSBERG M590A1"] = m590a1,
+	["BARRETT M98B"] = m98b
 }
-local FPSGun = require(game.ReplicatedStorage.Modules.FPS.FPSGun)
-local FPSPlayer = require(game.ReplicatedStorage.Modules.FPS.FPSPlayer)
-local Bullet = workspace.Bullets.Bullet
+
+
+local FPSGun = require(ReplicatedStorage.Modules.FPS.FPSGun)
+local FPSPlayer = require(ReplicatedStorage.Modules.FPS.FPSPlayer)
+local UnifiedFPSSystem = require(ReplicatedStorage.Modules.FPS.UnifiedFPSSystem)
+local Systems = UnifiedFPSSystem.initialize()
+local Config = UnifiedFPSSystem.Config
+
+for name, module in pairs(Guns) do
+	Config.WEAPONS[name] = {
+		Name = name,
+		Damage = { Body = module.Bodyshot, Head = module.Headshot },
+		FireRate = module.FireRate,
+		Ammo = module.Magazine,
+		MaxAmmo = module.Magazine,
+		BulletsPerShot = module.BulletPerShot,
+		ReloadingTime = module.ReloadingTime,
+		AimingValues = module.AimingValues,
+		Recoil = module.Recoil,
+		SpreadAngles = {
+			AimingSpreadAngle = module.AimingSpreadAngle,
+			SpreadAngle = module.SpreadAngle,
+			FiringSpreadAngle = module.FiringSpreadAngle,
+			MaxSpreadAngle = module.MaxSpreadAngle,
+			AngleReset = module.AngleReset,
+			CurrentSpreadAngle = module.SpreadAngle
+		},
+		CanAim = module.CanAim
+	}
+end
 
 FastCast.VisualizeCasts = true
 
-local CastParams = RaycastParams.new()
-CastParams.IgnoreWater = true
-
-function getSpreadDirection(baseDirection: Vector3, spreadAngle: number): Vector3
-	local cosTheta = math.cos(math.rad(spreadAngle))
-	
-	local z = cosTheta + (1 - cosTheta) * math.random()
-	
-	local phi = math.random() * 2 * math.pi
-	local sinT = math.sqrt(1 - z * z)
-	
-	local x = sinT * math.cos(phi)
-	local y = sinT * math.sin(phi)
-	local localVec = Vector3.new(x, y, -z)
-
-	local rotation = CFrame.lookAt(Vector3.zero, baseDirection)
-	local worldVec = rotation:VectorToWorldSpace(localVec)
-	
-	return worldVec.Unit
-end
-
- 
-local StateTracker = {
-	Shooting = {},
-	Reloading = {},
-	GunData = {},
-	Players = {}
-}
-
-local ANTICHEAT = {
-	MAX_SHOT_DISTANCE = 20, -- Studs from player's head
-	MIN_FIRERATE = 0.05, -- Minimum time between shots (seconds)
-	SPAM_LIMIT = 5, -- Max spam attempts before kick
-}
-
--- Server-side shooting handler
-Shooting.OnServerEvent:Connect(function(player, pos, weaponName, passedValue, state)
-	-- Validate player state
-	
-	if StateTracker.Shooting[player].Cooldown or StateTracker.Reloading[player].Cooldown then 
-		return 
-	elseif not player:IsDescendantOf(game.Players) then 
-		return 
-	elseif not player.Character or not player.Character:FindFirstChild("Humanoid") then 
-		return
-	elseif player.Character.Humanoid.Health <= 0 then
-		return
-	end
-	-- Anti-spam cooldown
-	local now = os.clock()
-	local playerData = StateTracker.GunData[player]
-	local gun = playerData:GetActiveGun()
-	if not playerData or gun.Name ~= weaponName then
-		warn(`{player.Name} attempted illegal weapon switch: {weaponName}`)
-		player:Kick("Exploid Detected : Invalid Gun")
-		return
-	elseif gun.Ammo <= 0 then
-		return
-	elseif now - (playerData.LastFireTime or 0) < ANTICHEAT.MIN_FIRERATE then
-		playerData.SpamAttempts = (playerData.SpamAttempts or 0) + 1
-		
-		if playerData.SpamAttempts >= ANTICHEAT.SPAM_LIMIT then
-			player:Kick("Exploit Detected: Rapid Fire")
-		end
-		return
-	elseif not playerData then
-		player:Kick("Invalid player data")
-		return
-	elseif now - playerData.LastFireTime > 20 then
-		playerData.SpamAttempts = 0
-	elseif (player.Character.Head.Position - passedValue.MuzzlePos).Magnitude > ANTICHEAT.MAX_SHOT_DISTANCE then
-		player:Kick("Exploit Detected: Invalid Bullet Origin")
-		return
-	end
-	
-	
-
-	local spreadAngle = gun.CurrentSpreadAngle
-	local maxSpread = Guns[weaponName].MaxSpreadAngle
-	local minSpread = Guns[weaponName].AimingSpreadAngle
-	if spreadAngle > maxSpread or spreadAngle < minSpread then
-		warn(`{player.Name} modified spread angle: {spreadAngle}`)
-		player:Kick("Spread Modified")
-		return
-	end
-
-	-- Deduct ammo (server-authoritative)
-	playerData.LastFireTime = now
-	gun.State = state
-	gun:Fire()
-	gun.Ammo -= 1
-	-- Process each bullet server-side
-	for i = 1, gun.BulletPerShot do
-		local direction = (passedValue.MousePos - passedValue.MuzzlePos).Unit
-		local spreadDirection = getSpreadDirection(direction,spreadAngle)
-		local RaycastRes = workspace:Raycast(pos,spreadDirection * 500, StateTracker.Shooting[player].ShootParams)
-		local Hit = RaycastRes and RaycastRes.Instance
-		caster:Fire(pos,spreadDirection,500)
-		if Hit then
-			local humanoid : Humanoid = Hit.Parent:FindFirstChild("Humanoid")
-			if humanoid then
-				local damage = Hit.Name == "Head" and gun.Headshot or gun.Bodyshot
-				humanoid:TakeDamage(damage)
-			end
-		end
-	end
-	
-	-- Cooldown management
-	StateTracker.Shooting[player].Cooldown = true
-	task.delay(gun.FireRate, function()
-		if StateTracker[player] then -- Check if player still exists
-			StateTracker.Shooting[player].Cooldown = false
-		end
-	end)
+RemoteEvents.Shooting.OnServerEvent:Connect(function(player, muzzlePos, weaponName, direction,ammo)
+	Systems.shootingSystem:handleShootRequest(
+		player, muzzlePos, weaponName, direction, ammo
+	)
 end)
 
-ReplicatedStorage.RemoteEvent.ChangeGun.OnServerEvent:Connect(function(player,Weapon : string)
-	local data = StateTracker.GunData[player]
-	if not data then return end
-	data:SwitchGun(Weapon)
-end)
+RemoteEvents.ChangeGun.OnServerEvent:Connect(function(player, weaponName,currentweapon)
+	local validation = Systems.validationPipeline:validate(player, "changeWeapon", {
+		weaponName = weaponName
+	})
 
-Reloading.OnServerEvent:Connect(function(Player :Player ,Weapon : string)
-	if StateTracker.Reloading[Player].Cooldown == true then return end
-	local data = StateTracker.GunData[Player]
-	local gun = data:GetActiveGun()
-	if not gun then return end
-	
-    StateTracker.Reloading[Player].Cooldown = true
-	task.delay(gun.ReloadingTime,function()
-		gun:Reload()
-	 StateTracker.Reloading[Player].Cooldown = false
-	end)
-	return true
+	if validation.success then
+		Systems.playerManager:updatePlayerData(player, "combat", "activeWeapon", weaponName)
+		Systems.playerManager:updatePlayerData(player, "combat", "lastWeaponSwitch", os.clock())
+	end 
 end)
-
-game.Players.PlayerAdded:Connect(function(player)
-	local data = FPSPlayer.new(player)
-	for gunName,gunModule in pairs(Guns) do
-		if not gunModule then continue end
-		local config = {
-			Name = gunName,
-			Damage = { Body = gunModule.Bodyshot, Head = gunModule.Headshot },
-			FireRate = gunModule.FireRate,
-			Ammo = gunModule.Magazine,
-			BulletsPerShot = gunModule.BulletPerShot,
-			ReloadingTime = gunModule.ReloadingTime,
-			AimingValues = gunModule.AimingValues,
-			Recoil = gunModule.Recoil,
-			SpreadAngles = {
-				AimingSpreadAngle = gunModule.AimingSpreadAngle,
-				SpreadAngle = gunModule.SpreadAngle,
-				FiringSpreadAngle = gunModule.FiringSpreadAngle,
-				MaxSpreadAngle = gunModule.MaxSpreadAngle,
-				AngleReset = gunModule.AngleReset;
-			}
-		}
-		local gun = FPSGun.new(config)
-		gun.State = false
-		data:AddGun(gunName,gun)
+RemoteEvents.StateHandler.OnServerEvent:Connect(function(player, action, context)
+	if action == "shootStart" then
+		-- Handle shoot start logic
+		-- context = weaponName
+		Systems.playerManager:updatePlayerData(player,"combat","isShooting",true)
+	elseif action == "shootEnd" then
+		-- Handle shoot end logic
+		-- context = weaponName
+		Systems.playerManager:updatePlayerData(player,"combat","isShooting",false)
+	elseif action == "aiming" then
+		Systems.playerManager.eventBus.emit("aiming",player,true,context.weaponName)
+		Systems.playerManager:updatePlayerData(player,"combat","isAiming",true)
+	elseif action == "stop aiming" then
+		Systems.playerManager:updatePlayerData(player,"combat","isShooting",false)
+		Systems.playerManager.eventBus.emit("stop aiming",player,false,context.weaponName)
+	elseif action == "reload" then
+		Systems.playerManager:updatePlayerData(player, "combat", "isReloading", true)
+		Systems.playerManager.eventBus.emit("reload",player,context.weaponName,context.ammo)
+	else
+		warn("Unknown state action: " .. tostring(action))
 	end
-	data.LastFireTime = 0
-	data.SpamAttempts = 0
- 	StateTracker.GunData[player] = data
-	local ShootParams = RaycastParams.new()
-	ShootParams.FilterDescendantsInstances = {player.Character or player.CharacterAdded:Wait()} 
- StateTracker.Shooting[player] = {
-		Cooldown = false,
-		ShootParams = ShootParams,
-	}
- StateTracker.Reloading[player] = {
-		Cooldown = false
-	}
- StateTracker[player] = {}
 end)
-game.Players.PlayerRemoving:Connect(function(player)
- StateTracker.Shooting[player] = nil
- StateTracker.Reloading[player] = nil
- StateTracker.GunData[player] = nil
- StateTracker.Players[player] = nil
- StateTracker[player] = {}
-end)
+
+
