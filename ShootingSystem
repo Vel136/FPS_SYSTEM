@@ -1,1 +1,246 @@
+-- ==========================================
+-- UNIFIED SHOOTING SYSTEM
+-- ==========================================
+local ShootingSystem = {}
+ShootingSystem.__index = ShootingSystem
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Config = require(script.Parent.Config)
+function ShootingSystem.new(playerManager, validationPipeline)
+	local self = setmetatable({}, ShootingSystem)
+	self.playerManager = playerManager
+	self.validation = validationPipeline
 
+	return self
+end
+local FastCast = require(ReplicatedStorage.Modules.FastCastRedux)
+local caster = FastCast.new()
+
+function ShootingSystem:handleShootRequest(player : Player, muzzlePos, weaponName, direction, ammo)
+	local playerData = self.playerManager:getPlayer(player)
+	if not playerData then
+		return {success = false, reason = "PLAYER_NOT_FOUND"}
+	end
+	-- Validate request
+	local validationResult = self.validation:validate(player, "shoot", {
+		muzzlePos = muzzlePos,
+		weaponName = weaponName,
+		ammo = ammo,
+	})
+
+	if not validationResult.success then
+		print(validationResult.reason)
+		return {success = false, reason = validationResult.reason}
+	end
+
+
+
+	-- Check weapon state
+	local weapon = playerData.combat.weapons[weaponName]
+
+	if not weapon or weapon.ammo <= 0 then
+		return {success = false, reason = "NO_AMMO"}
+	end
+
+	-- Check if player can shoot
+	if playerData.combat.isReloading or playerData.security.isRestricted then
+		return {success = false, reason = "CANNOT_SHOOT"}
+	end
+
+	direction = self._getSpreadDirection(direction, weapon.CurrentSpreadAngle)
+	local hitResult = self:_processBullet(player, muzzlePos, direction, weaponName)
+	caster:Fire(muzzlePos,direction,500)
+	-- Update player data
+	self:_updateAfterShot(player, weaponName, hitResult)
+
+	return {success = true, hitResult = hitResult}
+end
+function ShootingSystem._getSpreadDirection(baseDirection, spreadAngle)
+	local cosTheta = math.cos(math.rad(spreadAngle))
+	local z = cosTheta + (1 - cosTheta) * math.random()
+	local phi = math.random() * 2 * math.pi
+	local sinT = math.sqrt(1 - z * z)
+	local x = sinT * math.cos(phi)
+	local y = sinT * math.sin(phi)
+	local localVec = Vector3.new(x, y, z)
+	local rotation = CFrame.lookAt(Vector3.zero, baseDirection)
+	return rotation:VectorToWorldSpace(localVec).Unit
+end
+function ShootingSystem:_processBullet(player, startPos, direction, weaponName)
+	local weaponConfig = Config.WEAPONS[weaponName]
+	if not weaponConfig then return nil end
+
+	-- Create raycast parameters
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterDescendantsInstances = {player.Character}
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+
+	-- Perform raycast
+	local raycastResult = workspace:Raycast(startPos, direction * 500, raycastParams)
+
+	if raycastResult then
+		local hitPart = raycastResult.Instance
+		local character = hitPart.Parent
+		local humanoid = character:FindFirstChild("Humanoid")
+
+		if humanoid then
+			local damage = hitPart.Name == "Head" and 
+				weaponConfig.Damage.Head or weaponConfig.Damage.Body
+
+			humanoid:TakeDamage(damage)
+
+			return {
+				hit = true,
+				part = hitPart.Name,
+				damage = damage,
+				target = character
+			}
+		end
+	end
+
+	return {hit = false}
+end
+function ShootingSystem:updateWeaponStat(player, weaponName, statType, value)
+	-- Input validation
+	if not player or not weaponName or not statType or value == nil then
+		warn("Invalid parameters for updateWeaponStat")
+		return false
+	end
+
+	local playerData = self.playerManager:getPlayer(player)
+	if not playerData then
+		warn("Player data not found:", player.Name)
+		return false
+	end
+
+	local clientweapon = playerData.combat.weapons[weaponName]
+	local serverweapon = Config.WEAPONS[weaponName]
+	if not clientweapon or not serverweapon then
+		warn("Weapon not found:", weaponName)
+		return false
+	end
+
+	-- Whitelist allowed stat modifications
+	local ALLOWED_STATS = {
+		ammo = {type = "number", min = 0, max = serverweapon.MaxAmmo or 100},
+		CurrentSpreadAngle = {type = "number", min = serverweapon.SpreadAngles.AimingSpreadAngle, max = serverweapon.SpreadAngles.MaxSpreadAngle},
+	}
+
+	local statConfig = ALLOWED_STATS[statType]
+	if not statConfig then
+		warn("Stat modification not allowed:", statType)
+		return false
+	end
+
+	-- Type and bounds checking
+	if type(value) ~= statConfig.type then
+		warn("Invalid value type for", statType, "expected", statConfig.type)
+		return false
+	end
+
+	value = math.clamp(value, statConfig.min or -math.huge, statConfig.max or math.huge)
+
+	-- Apply the change
+	clientweapon[statType] = value
+
+	-- Log for debugging/anti-cheat purposes 
+	--print(string.format("Updated %s.%s to %s for player %s", 	weaponName, statType, tostring(value), player.Name))
+
+	return true
+end
+function ShootingSystem:_updateAfterShot(player, weaponName, hitResult)
+	local playerData = self.playerManager:getPlayer(player)
+	if not playerData then return end
+
+	-- Update weapon ammo
+	local weapon = playerData.combat.weapons[weaponName]
+	local ammo = weapon.ammo
+	self:updateWeaponStat(player,weaponName,"ammo",ammo - 1)
+	local weaponConfig = Config.WEAPONS[weaponName]
+	local spreadAngles = weaponConfig.SpreadAngles
+	local firingspreadangle = spreadAngles.FiringSpreadAngle
+	self:updateWeaponStat(player,weaponName,"CurrentSpreadAngle",weapon.CurrentSpreadAngle + firingspreadangle)
+	-- Update statistics
+	playerData.stats.totalShots = playerData.stats.totalShots + 1
+	playerData.combat.lastFireTime = os.clock()
+
+	if hitResult.hit then
+		playerData.stats.totalHits = playerData.stats.totalHits + 1
+
+		if hitResult.part == "Head" then
+			playerData.stats.headshots = playerData.stats.headshots + 1
+		end
+	end
+
+	-- Update accuracy history
+	local accuracy = playerData.stats.totalHits / playerData.stats.totalShots
+	table.insert(playerData.behavior.accuracyHistory, accuracy)
+
+	-- Maintain history limit
+	if #playerData.behavior.accuracyHistory > Config.SECURITY.MAX_HISTORY_LENGTH then
+		table.remove(playerData.behavior.accuracyHistory, 1)
+	end
+
+	playerData.stats.accuracy = accuracy
+
+
+	task.delay(spreadAngles.AngleReset,function()
+		self:handleAiming(player,playerData.combat.isAiming,weaponName)
+	end)
+end
+-- =========================================
+-- RELOADING
+-- ========================================
+function ShootingSystem:handleReloadRequest(player, weaponName, ammo)
+
+	local playerData = self.playerManager:getPlayer(player)
+	local validation = self.validation:validate(player, "reload", {
+		weaponName = weaponName,
+		ammo = ammo,
+	})
+
+	if validation.success then
+
+		local weapon = playerData.combat.weapons[weaponName]
+		-- Start reload process
+		weapon.isReloading = true
+		-- Complete reload after delay
+		task.delay(Config.WEAPONS[weaponName].ReloadingTime, function()
+			self:updateWeaponStat(player,weaponName,"ammo",Config.WEAPONS[weaponName].MaxAmmo)
+			weapon.isReloading = false
+			self.playerManager:updatePlayerData(player, "combat", "isReloading", false)
+		end)
+	else
+		warn("RELOADING_FAILED :", validation.reason)
+	end
+end
+function ShootingSystem:handleAiming(player, isAiming, weaponName)
+	local playerData = self.playerManager:getPlayer(player)
+	if not playerData then
+		warn("Player data not found for:", player.Name)
+		return
+	end
+
+	-- For stop aiming, we might not have weaponName, so get current weapon
+	local currentWeapon = weaponName or playerData.combat.activeWeapon
+	if not currentWeapon then
+		warn("No weapon specified for aiming action")
+		return
+	end
+
+	local weapon = playerData.combat.weapons[currentWeapon]
+	local weaponConfig = Config.WEAPONS[currentWeapon]
+
+	if not weapon or not weaponConfig then
+		warn("Weapon or config not found:", currentWeapon)
+		return
+	end
+
+	local spreadAngles = weaponConfig.SpreadAngles
+	local spread = isAiming 
+		and (spreadAngles.AimingSpreadAngle or self.SpreadAngle)
+		or (spreadAngles.SpreadAngle)
+
+	self:updateWeaponStat(player,weaponName,"CurrentSpreadAngle",spread)
+	self.playerManager:updatePlayerData(player,"combat","isAiming",isAiming)
+end
+return ShootingSystem
